@@ -482,27 +482,18 @@ jobs:
 
             ## Downloads
 
-            ### CPU-only builds
-
-            | Platform | Architecture | File |
-            |----------|-------------|------|
-            | macOS    | Apple Silicon (arm64) | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-macos-arm64.zip` |
-            | macOS    | Intel (x86_64)       | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-macos-x86_64.zip` |
-            | Linux    | x86_64               | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-x86_64.zip` |
-            | Linux    | arm64                | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-arm64.zip` |
-            | Windows  | x64                  | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-x64.zip` |
-
-            ### GPU-accelerated builds
-
-            | Platform | Architecture | GPU Backend | File |
-            |----------|-------------|-------------|------|
-            | macOS    | Apple Silicon (arm64) | Metal | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-macos-arm64.zip` |
-            | macOS    | Intel (x86_64)       | Metal | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-macos-x86_64.zip` |
-            | Linux    | x86_64               | Vulkan | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-x86_64-vulkan.zip` |
-            | Windows  | x64                  | Vulkan | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-x64-vulkan.zip` |
+            | Platform | Architecture | GPU | File |
+            |----------|-------------|-----|------|
+            | macOS    | Apple Silicon (arm64) | ✅ Metal | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-macos-arm64.zip` |
+            | macOS    | Intel (x86_64)       | ✅ Metal | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-macos-x86_64.zip` |
+            | Linux    | x86_64               | ❌ CPU-only | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-x86_64.zip` |
+            | Linux    | x86_64               | ✅ Vulkan | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-x86_64-vulkan.zip` |
+            | Linux    | arm64                | ❌ CPU-only | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-arm64.zip` |
+            | Windows  | x64                  | ❌ CPU-only | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-x64.zip` |
+            | Windows  | x64                  | ✅ Vulkan | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-x64-vulkan.zip` |
 
             ### Notes
-            - macOS builds include Metal GPU acceleration by default (no separate download needed)
+            - macOS builds include Metal GPU acceleration (falls back to CPU if Metal is unavailable)
             - Vulkan builds require GPU drivers with Vulkan support (NVIDIA, AMD, or Intel)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
