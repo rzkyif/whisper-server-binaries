@@ -1,0 +1,49 @@
+name: Check for new upstream releases
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Daily at 00:00 UTC
+  workflow_dispatch:       # Allow manual trigger
+
+jobs:
+  check-and-trigger:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get latest upstream release tag
+        id: upstream
+        run: |
+          LATEST_TAG=$(gh api repos/ggml-org/whisper.cpp/releases/latest --jq '.tag_name')
+          echo "Latest upstream tag: $LATEST_TAG"
+          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if already released here
+        id: check
+        run: |
+          TAG="${{ steps.upstream.outputs.tag }}"
+
+          # Check if a release (draft or published) already exists with this tag
+          EXISTING=$(gh api repos/${{ github.repository }}/releases --jq ".[].tag_name" 2>/dev/null | grep -Fx "$TAG" || true)
+
+          if [[ -n "$EXISTING" ]]; then
+            echo "Release $TAG already exists, skipping."
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "New release found: $TAG"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger build-and-release workflow
+        if: steps.check.outputs.should_build == 'true'
+        run: |
+          echo "Triggering build for ${{ steps.upstream.outputs.tag }}"
+          gh workflow run build-and-release.yml \
+            --repo ${{ github.repository }} \
+            -f whisper_cpp_version="${{ steps.upstream.outputs.tag }}" \
+            -f create_release=true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

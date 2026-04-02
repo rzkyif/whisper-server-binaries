@@ -23,3 +23,7 @@ whisper-server-{version}-{platform}-{arch}[-vulkan].zip
 ├── whisper-server[.exe]
 └── ... necessary libraries ...
 ```
+
+## Automatic Updates
+
+This repository automatically checks [ggml-org/whisper.cpp](https://github.com/ggml-org/whisper.cpp) for new releases daily at **00:00 UTC**. When a new version is detected, a build is triggered automatically and a release is published with all binaries.

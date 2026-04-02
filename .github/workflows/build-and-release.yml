@@ -470,7 +470,7 @@ jobs:
         with:
           tag_name: ${{ needs.determine-tag.outputs.tag_name }}
           name: ${{ needs.determine-tag.outputs.tag_name }}
-          draft: true
+          draft: false
           files: ./release/*.zip
           body: |
             Pre-compiled whisper-server binaries from [whisper.cpp](https://github.com/${{ env.WHISPER_CPP_REPO }}) ${{ needs.determine-tag.outputs.tag_name }}.
