@@ -1,0 +1,503 @@
+name: Build and Release whisper-server
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      whisper_cpp_version:
+        description: 'whisper.cpp tag or commit to build (e.g. v1.8.4)'
+        required: true
+        default: 'master'
+      create_release:
+        description: 'Create a GitHub release'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  WHISPER_CPP_REPO: "ggml-org/whisper.cpp"
+  ubuntu_image: "ubuntu:22.04"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Determine version tag and whether to create a release
+  # ---------------------------------------------------------------------------
+  determine-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.tag.outputs.name }}
+      whisper_ref: ${{ steps.tag.outputs.whisper_ref }}
+      should_release: ${{ steps.tag.outputs.should_release }}
+
+    steps:
+      - name: Determine tag and version
+        id: tag
+        shell: bash
+        run: |
+          SHOULD_RELEASE="false"
+
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG_NAME="${{ github.ref_name }}"
+            WHISPER_REF="${{ github.ref_name }}"
+            SHOULD_RELEASE="true"
+          elif [[ "${{ github.event.inputs.create_release }}" == "true" ]]; then
+            TAG_NAME="${{ github.event.inputs.whisper_cpp_version }}"
+            WHISPER_REF="${{ github.event.inputs.whisper_cpp_version }}"
+            SHOULD_RELEASE="true"
+          else
+            TAG_NAME="${{ github.event.inputs.whisper_cpp_version || 'master' }}"
+            WHISPER_REF="${{ github.event.inputs.whisper_cpp_version || 'master' }}"
+          fi
+
+          echo "Tag name: $TAG_NAME"
+          echo "Whisper ref: $WHISPER_REF"
+          echo "Should release: $SHOULD_RELEASE"
+
+          echo "name=$TAG_NAME"           >> $GITHUB_OUTPUT
+          echo "whisper_ref=$WHISPER_REF" >> $GITHUB_OUTPUT
+          echo "should_release=$SHOULD_RELEASE" >> $GITHUB_OUTPUT
+
+  # ---------------------------------------------------------------------------
+  # macOS builds — separate native binaries for arm64 and x86_64
+  # Both include Metal GPU acceleration
+  # ---------------------------------------------------------------------------
+  build-macos:
+    needs: determine-tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: arm64
+          - runner: macos-14
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Clone whisper.cpp
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.WHISPER_CPP_REPO }}
+          ref: ${{ needs.determine-tag.outputs.whisper_ref }}
+          submodules: true
+          fetch-depth: 1
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.22
+        with:
+          key: macos-${{ matrix.arch }}
+          evict-old-files: 1d
+
+      - name: Configure CMake
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_EXAMPLES=ON \
+            -DWHISPER_BUILD_SERVER=ON \
+            -DWHISPER_SDL2=OFF \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_METAL=ON \
+            -DGGML_METAL_USE_BF16=ON \
+            -DGGML_METAL_EMBED_LIBRARY=ON
+
+      - name: Build whisper-server
+        run: |
+          cmake --build build --config Release --target whisper-server -j $(sysctl -n hw.logicalcpu)
+
+      - name: Package binary
+        run: |
+          mkdir -p staging
+          cp build/bin/whisper-server staging/
+          cd staging
+          zip -r ../whisper-server-${{ needs.determine-tag.outputs.tag_name }}-macos-${{ matrix.arch }}.zip .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: whisper-server-${{ needs.determine-tag.outputs.tag_name }}-macos-${{ matrix.arch }}
+          path: whisper-server-${{ needs.determine-tag.outputs.tag_name }}-macos-${{ matrix.arch }}.zip
+
+  # ---------------------------------------------------------------------------
+  # Linux builds — x86_64 native, arm64 via QEMU (CPU-only)
+  # ---------------------------------------------------------------------------
+  build-linux-x86_64:
+    needs: determine-tag
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Clone whisper.cpp
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.WHISPER_CPP_REPO }}
+          ref: ${{ needs.determine-tag.outputs.whisper_ref }}
+          submodules: true
+          fetch-depth: 1
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.22
+        with:
+          key: linux-x86_64
+          evict-old-files: 1d
+
+      - name: Configure CMake
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_EXAMPLES=ON \
+            -DWHISPER_BUILD_SERVER=ON \
+            -DWHISPER_SDL2=OFF \
+            -DBUILD_SHARED_LIBS=OFF
+
+      - name: Build whisper-server
+        run: |
+          cmake --build build --config Release --target whisper-server -j $(nproc)
+
+      - name: Package binary
+        run: |
+          mkdir -p staging
+          cp build/bin/whisper-server staging/
+          cd staging
+          zip -r ../whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-x86_64.zip .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-x86_64
+          path: whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-x86_64.zip
+
+  build-linux-arm64:
+    needs: determine-tag
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Clone whisper.cpp
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.WHISPER_CPP_REPO }}
+          ref: ${{ needs.determine-tag.outputs.whisper_ref }}
+          submodules: true
+          fetch-depth: 1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Build whisper-server (arm64 via QEMU)
+        run: |
+          docker run --platform linux/arm64 --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace ${{ env.ubuntu_image }} /bin/sh -c '
+            set -e
+            export DEBIAN_FRONTEND=noninteractive
+            sed -i "s|archive.ubuntu.com|mirrors.kernel.org|g" /etc/apt/sources.list
+            sed -i "s|security.ubuntu.com|mirrors.kernel.org|g" /etc/apt/sources.list
+
+            apt update
+            apt install -y build-essential cmake zip
+            cmake -B build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DWHISPER_BUILD_TESTS=OFF \
+              -DWHISPER_BUILD_EXAMPLES=ON \
+              -DWHISPER_BUILD_SERVER=ON \
+              -DWHISPER_SDL2=OFF \
+              -DBUILD_SHARED_LIBS=OFF \
+              -DGGML_NATIVE=OFF \
+              -DGGML_CPU_ARM_ARCH=armv8-a
+            cmake --build build --config Release --target whisper-server -j $(nproc)
+            mkdir -p staging
+            cp build/bin/whisper-server staging/
+            cd staging
+            zip -r ../whisper-server-linux-arm64.zip .'
+
+      - name: Rename artifact
+        run: |
+          mv whisper-server-linux-arm64.zip \
+             whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-arm64.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-arm64
+          path: whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-arm64.zip
+
+  # ---------------------------------------------------------------------------
+  # Linux Vulkan build — x86_64 with GPU acceleration
+  # ---------------------------------------------------------------------------
+  build-linux-x86_64-vulkan:
+    needs: determine-tag
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Clone whisper.cpp
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.WHISPER_CPP_REPO }}
+          ref: ${{ needs.determine-tag.outputs.whisper_ref }}
+          submodules: true
+          fetch-depth: 1
+
+      - name: Install Vulkan SDK
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+          sudo apt-get update
+          sudo apt-get install -y vulkan-sdk
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.22
+        with:
+          key: linux-x86_64-vulkan
+          evict-old-files: 1d
+
+      - name: Configure CMake
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_EXAMPLES=ON \
+            -DWHISPER_BUILD_SERVER=ON \
+            -DWHISPER_SDL2=OFF \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_VULKAN=ON
+
+      - name: Build whisper-server
+        run: |
+          cmake --build build --config Release --target whisper-server -j $(nproc)
+
+      - name: Package binary
+        run: |
+          mkdir -p staging
+          cp build/bin/whisper-server staging/
+          cd staging
+          zip -r ../whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-x86_64-vulkan.zip .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-x86_64-vulkan
+          path: whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-x86_64-vulkan.zip
+
+  # ---------------------------------------------------------------------------
+  # Windows build — x64 MSVC (CPU-only)
+  # ---------------------------------------------------------------------------
+  build-windows:
+    needs: determine-tag
+    runs-on: windows-latest
+
+    steps:
+      - name: Clone whisper.cpp
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.WHISPER_CPP_REPO }}
+          ref: ${{ needs.determine-tag.outputs.whisper_ref }}
+          submodules: true
+          fetch-depth: 1
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v3
+
+      - name: sccache
+        uses: hendrikmuhs/ccache-action@v1.2.22
+        with:
+          key: windows-x64
+          variant: sccache
+          evict-old-files: 1d
+
+      - name: Configure CMake
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache ^
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache ^
+            -DWHISPER_BUILD_TESTS=OFF ^
+            -DWHISPER_BUILD_EXAMPLES=ON ^
+            -DWHISPER_BUILD_SERVER=ON ^
+            -DWHISPER_SDL2=OFF ^
+            -DBUILD_SHARED_LIBS=ON
+
+      - name: Build whisper-server
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake --build build --config Release --target whisper-server -j %NUMBER_OF_PROCESSORS%
+
+      - name: Package binary
+        shell: pwsh
+        run: |
+          New-Item -Path staging -ItemType Directory -Force
+
+          # Copy the server executable
+          Copy-Item "build\bin\Release\whisper-server.exe" -Destination "staging\"
+
+          # Copy required DLLs (whisper, ggml, etc.)
+          Get-ChildItem "build\bin\Release\*.dll" | Copy-Item -Destination "staging\"
+
+          $zipName = "whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-x64.zip"
+          Compress-Archive -Path "staging\*" -DestinationPath $zipName
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-x64
+          path: whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-x64.zip
+
+  # ---------------------------------------------------------------------------
+  # Windows Vulkan build — x64 with GPU acceleration
+  # ---------------------------------------------------------------------------
+  build-windows-x64-vulkan:
+    needs: determine-tag
+    runs-on: windows-latest
+
+    env:
+      VULKAN_SDK_VERSION: "1.4.304.1"
+
+    steps:
+      - name: Clone whisper.cpp
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.WHISPER_CPP_REPO }}
+          ref: ${{ needs.determine-tag.outputs.whisper_ref }}
+          submodules: true
+          fetch-depth: 1
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/${{ env.VULKAN_SDK_VERSION }}/windows/VulkanSDK-${{ env.VULKAN_SDK_VERSION }}-Installer.exe" -OutFile VulkanSDK.exe
+          Start-Process -FilePath .\VulkanSDK.exe -ArgumentList "--accept-licenses --default-answer --confirm-command install" -Wait
+          echo "VULKAN_SDK=C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}" >> $env:GITHUB_ENV
+          echo "C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}\Bin" >> $env:GITHUB_PATH
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v3
+
+      - name: sccache
+        uses: hendrikmuhs/ccache-action@v1.2.22
+        with:
+          key: windows-x64-vulkan
+          variant: sccache
+          evict-old-files: 1d
+
+      - name: Configure CMake
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache ^
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache ^
+            -DWHISPER_BUILD_TESTS=OFF ^
+            -DWHISPER_BUILD_EXAMPLES=ON ^
+            -DWHISPER_BUILD_SERVER=ON ^
+            -DWHISPER_SDL2=OFF ^
+            -DBUILD_SHARED_LIBS=ON ^
+            -DGGML_VULKAN=ON
+
+      - name: Build whisper-server
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake --build build --config Release --target whisper-server -j %NUMBER_OF_PROCESSORS%
+
+      - name: Package binary
+        shell: pwsh
+        run: |
+          New-Item -Path staging -ItemType Directory -Force
+
+          # Copy the server executable
+          Copy-Item "build\bin\Release\whisper-server.exe" -Destination "staging\"
+
+          # Copy required DLLs (whisper, ggml, etc.)
+          Get-ChildItem "build\bin\Release\*.dll" | Copy-Item -Destination "staging\"
+
+          $zipName = "whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-x64-vulkan.zip"
+          Compress-Archive -Path "staging\*" -DestinationPath $zipName
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-x64-vulkan
+          path: whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-x64-vulkan.zip
+
+  # ---------------------------------------------------------------------------
+  # Release — collect all artifacts and create a GitHub Release
+  # ---------------------------------------------------------------------------
+  release:
+    if: ${{ needs.determine-tag.outputs.should_release == 'true' }}
+    runs-on: ubuntu-latest
+    needs:
+      - determine-tag
+      - build-macos
+      - build-linux-x86_64
+      - build-linux-arm64
+      - build-linux-x86_64-vulkan
+      - build-windows
+      - build-windows-x64-vulkan
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: ./artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p release
+          find ./artifacts -name "*.zip" -exec mv {} ./release/ \;
+          echo "Release assets:"
+          ls -la ./release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.determine-tag.outputs.tag_name }}
+          name: ${{ needs.determine-tag.outputs.tag_name }}
+          draft: true
+          files: ./release/*.zip
+          body: |
+            Pre-compiled whisper-server binaries from [whisper.cpp](https://github.com/${{ env.WHISPER_CPP_REPO }}) ${{ needs.determine-tag.outputs.tag_name }}.
+
+            ## Downloads
+
+            ### CPU-only builds
+
+            | Platform | Architecture | File |
+            |----------|-------------|------|
+            | macOS    | Apple Silicon (arm64) | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-macos-arm64.zip` |
+            | macOS    | Intel (x86_64)       | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-macos-x86_64.zip` |
+            | Linux    | x86_64               | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-x86_64.zip` |
+            | Linux    | arm64                | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-arm64.zip` |
+            | Windows  | x64                  | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-x64.zip` |
+
+            ### GPU-accelerated builds
+
+            | Platform | Architecture | GPU Backend | File |
+            |----------|-------------|-------------|------|
+            | macOS    | Apple Silicon (arm64) | Metal | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-macos-arm64.zip` |
+            | macOS    | Intel (x86_64)       | Metal | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-macos-x86_64.zip` |
+            | Linux    | x86_64               | Vulkan | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-x86_64-vulkan.zip` |
+            | Windows  | x64                  | Vulkan | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-x64-vulkan.zip` |
+
+            ### Notes
+            - macOS builds include Metal GPU acceleration by default (no separate download needed)
+            - Vulkan builds require GPU drivers with Vulkan support (NVIDIA, AMD, or Intel)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
