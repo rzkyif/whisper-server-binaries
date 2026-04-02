@@ -10,7 +10,7 @@ Pre-compiled [whisper-server](https://github.com/ggml-org/whisper.cpp) binaries 
 | macOS    | Intel (x86_64)       | ✅ Metal | Native build |
 | Linux    | x86_64               | ❌ CPU-only | Native build |
 | Linux    | x86_64               | ✅ Vulkan | Requires Vulkan-capable GPU drivers |
-| Linux    | arm64                | ❌ CPU-only | Built via QEMU emulation |
+| Linux    | arm64                | ❌ CPU-only | Cross-compiled via aarch64-linux-gnu |
 | Windows  | x64                  | ❌ CPU-only | Native MSVC build |
 | Windows  | x64                  | ✅ Vulkan | Requires Vulkan-capable GPU drivers |
 

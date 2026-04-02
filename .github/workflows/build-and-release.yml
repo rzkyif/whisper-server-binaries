@@ -193,40 +193,45 @@ jobs:
           submodules: true
           fetch-depth: 1
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Build whisper-server (arm64 via QEMU)
+      - name: Install cross-compiler
         run: |
-          docker run --platform linux/arm64 --rm \
-            -v ${{ github.workspace }}:/workspace \
-            -w /workspace ${{ env.ubuntu_image }} /bin/sh -c '
-            set -e
-            export DEBIAN_FRONTEND=noninteractive
-            sed -i "s|archive.ubuntu.com|mirrors.kernel.org|g" /etc/apt/sources.list
-            sed -i "s|security.ubuntu.com|mirrors.kernel.org|g" /etc/apt/sources.list
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
-            apt update
-            apt install -y build-essential cmake zip
-            cmake -B build \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DWHISPER_BUILD_TESTS=OFF \
-              -DWHISPER_BUILD_EXAMPLES=ON \
-              -DWHISPER_BUILD_SERVER=ON \
-              -DWHISPER_SDL2=OFF \
-              -DBUILD_SHARED_LIBS=OFF \
-              -DGGML_NATIVE=OFF \
-              -DGGML_CPU_ARM_ARCH=armv8-a
-            cmake --build build --config Release --target whisper-server -j $(nproc)
-            mkdir -p staging
-            cp build/bin/whisper-server staging/
-            cd staging
-            zip -r ../whisper-server-linux-arm64.zip .'
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.22
+        with:
+          key: linux-arm64
+          evict-old-files: 1d
 
-      - name: Rename artifact
+      - name: Configure CMake (cross-compile for arm64)
         run: |
-          mv whisper-server-linux-arm64.zip \
-             whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-arm64.zip
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+            -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_EXAMPLES=ON \
+            -DWHISPER_BUILD_SERVER=ON \
+            -DWHISPER_SDL2=OFF \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ARM_ARCH=armv8-a
+
+      - name: Build whisper-server
+        run: |
+          cmake --build build --config Release --target whisper-server -j $(nproc)
+
+      - name: Package binary
+        run: |
+          mkdir -p staging
+          cp build/bin/whisper-server staging/
+          cd staging
+          zip -r ../whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-arm64.zip .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
