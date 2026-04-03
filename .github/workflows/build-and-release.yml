@@ -299,7 +299,7 @@ jobs:
           path: whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-x86_64-vulkan.zip
 
   # ---------------------------------------------------------------------------
-  # Windows build — x64 MSVC (CPU-only)
+  # Windows build — x64 LLVM/Clang (CPU-only)
   # ---------------------------------------------------------------------------
   build-windows:
     needs: determine-tag
@@ -314,9 +314,6 @@ jobs:
           submodules: true
           fetch-depth: 1
 
-      - name: Add msbuild to PATH
-        uses: microsoft/setup-msbuild@v3
-
       - name: sccache
         uses: hendrikmuhs/ccache-action@v1.2.22
         with:
@@ -327,11 +324,12 @@ jobs:
       - name: Configure CMake
         shell: cmd
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
           cmake -S . -B build -G "Ninja Multi-Config" ^
-            -DCMAKE_BUILD_TYPE=Release ^
+            -D CMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake ^
             -DCMAKE_C_COMPILER_LAUNCHER=sccache ^
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache ^
+            -DGGML_NATIVE=OFF ^
             -DWHISPER_BUILD_TESTS=OFF ^
             -DWHISPER_BUILD_EXAMPLES=ON ^
             -DWHISPER_BUILD_SERVER=ON ^
@@ -341,7 +339,7 @@ jobs:
       - name: Build whisper-server
         shell: cmd
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
           cmake --build build --config Release --target whisper-server -j %NUMBER_OF_PROCESSORS%
 
       - name: Package binary
@@ -365,7 +363,7 @@ jobs:
           path: whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-x64.zip
 
   # ---------------------------------------------------------------------------
-  # Windows Vulkan build — x64 with GPU acceleration
+  # Windows Vulkan build — x64 LLVM/Clang with GPU acceleration
   # ---------------------------------------------------------------------------
   build-windows-x64-vulkan:
     needs: determine-tag
@@ -391,9 +389,6 @@ jobs:
           echo "VULKAN_SDK=C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}" >> $env:GITHUB_ENV
           echo "C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}\Bin" >> $env:GITHUB_PATH
 
-      - name: Add msbuild to PATH
-        uses: microsoft/setup-msbuild@v3
-
       - name: sccache
         uses: hendrikmuhs/ccache-action@v1.2.22
         with:
@@ -404,11 +399,12 @@ jobs:
       - name: Configure CMake
         shell: cmd
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
           cmake -S . -B build -G "Ninja Multi-Config" ^
-            -DCMAKE_BUILD_TYPE=Release ^
+            -D CMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake ^
             -DCMAKE_C_COMPILER_LAUNCHER=sccache ^
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache ^
+            -DGGML_NATIVE=OFF ^
             -DWHISPER_BUILD_TESTS=OFF ^
             -DWHISPER_BUILD_EXAMPLES=ON ^
             -DWHISPER_BUILD_SERVER=ON ^
@@ -419,7 +415,7 @@ jobs:
       - name: Build whisper-server
         shell: cmd
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
           cmake --build build --config Release --target whisper-server -j %NUMBER_OF_PROCESSORS%
 
       - name: Package binary
@@ -443,6 +439,70 @@ jobs:
           path: whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-x64-vulkan.zip
 
   # ---------------------------------------------------------------------------
+  # Windows ARM64 build — LLVM/Clang cross-compilation (CPU-only)
+  # ---------------------------------------------------------------------------
+  build-windows-arm64:
+    needs: determine-tag
+    runs-on: windows-latest
+
+    steps:
+      - name: Clone whisper.cpp
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.WHISPER_CPP_REPO }}
+          ref: ${{ needs.determine-tag.outputs.whisper_ref }}
+          submodules: true
+          fetch-depth: 1
+
+      - name: sccache
+        uses: hendrikmuhs/ccache-action@v1.2.22
+        with:
+          key: windows-arm64
+          variant: sccache
+          evict-old-files: 1d
+
+      - name: Configure CMake (cross-compile for ARM64)
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" amd64_arm64
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -D CMAKE_TOOLCHAIN_FILE=cmake/arm64-windows-llvm.cmake ^
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache ^
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache ^
+            -DGGML_NATIVE=OFF ^
+            -DWHISPER_BUILD_TESTS=OFF ^
+            -DWHISPER_BUILD_EXAMPLES=ON ^
+            -DWHISPER_BUILD_SERVER=ON ^
+            -DWHISPER_SDL2=OFF ^
+            -DBUILD_SHARED_LIBS=ON
+
+      - name: Build whisper-server
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" amd64_arm64
+          cmake --build build --config Release --target whisper-server -j %NUMBER_OF_PROCESSORS%
+
+      - name: Package binary
+        shell: pwsh
+        run: |
+          New-Item -Path staging -ItemType Directory -Force
+
+          # Copy the server executable
+          Copy-Item "build\bin\Release\whisper-server.exe" -Destination "staging\"
+
+          # Copy required DLLs (whisper, ggml, etc.)
+          Get-ChildItem "build\bin\Release\*.dll" | Copy-Item -Destination "staging\"
+
+          $zipName = "whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-arm64.zip"
+          Compress-Archive -Path "staging\*" -DestinationPath $zipName
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-arm64
+          path: whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-arm64.zip
+
+  # ---------------------------------------------------------------------------
   # Release — collect all artifacts and create a GitHub Release
   # ---------------------------------------------------------------------------
   release:
@@ -456,6 +516,7 @@ jobs:
       - build-linux-x86_64-vulkan
       - build-windows
       - build-windows-x64-vulkan
+      - build-windows-arm64
 
     steps:
       - name: Download all artifacts
@@ -488,12 +549,14 @@ jobs:
             | macOS    | Intel (x86_64)       | ✅ Metal | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-macos-x86_64.zip` |
             | Linux    | x86_64               | ❌ CPU-only | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-x86_64.zip` |
             | Linux    | x86_64               | ✅ Vulkan | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-x86_64-vulkan.zip` |
-            | Linux    | arm64                | ❌ CPU-only | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-arm64.zip` |
+            | Linux    | ARM64                | ❌ CPU-only | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-linux-arm64.zip` |
             | Windows  | x64                  | ❌ CPU-only | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-x64.zip` |
             | Windows  | x64                  | ✅ Vulkan | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-x64-vulkan.zip` |
+            | Windows  | ARM64                | ❌ CPU-only | `whisper-server-${{ needs.determine-tag.outputs.tag_name }}-windows-arm64.zip` |
 
             ### Notes
             - macOS builds include Metal GPU acceleration (falls back to CPU if Metal is unavailable)
             - Vulkan builds require GPU drivers with Vulkan support (NVIDIA, AMD, or Intel)
+            - Windows ARM64 build is cross-compiled via LLVM/Clang (CPU-only)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
